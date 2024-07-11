@@ -1,10 +1,8 @@
-use log::{error, warn};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_xml_rs::from_reader;
 use std::{fs::File, io::BufReader, path::Path, string::String};
 
 /// FCU Configuration File 'schema'
-///
 
 /// Module Definition
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -61,56 +59,37 @@ pub struct MergModuleDataSet {
 
 #[allow(non_snake_case)]
 impl MergModuleDataSet {
-    pub fn new<P: AsRef<Path> + std::fmt::Display>(module_dataset_file: P) -> MergModuleDataSet {
+    pub fn populate<P: AsRef<Path> + std::fmt::Display>(
+        module_dataset_file: P,
+    ) -> Result<MergModuleDataSet, &'static str> {
         let module_data = Self::read_fcu_file(module_dataset_file);
         match module_data {
-            Some(md) => {
-                return md;
+            Ok(md) => {
+                return Ok(md);
             }
-            None => {
-                // Return empty structure
-                let mergModules: Vec<MergModule> = Vec::new();
-                let userEvents: Vec<UserEvent> = Vec::new();
-                let userNodes: Vec<UserNode> = Vec::new();
-                let md = MergModuleDataSet {
-                    mergModules,
-                    userEvents,
-                    userNodes,
-                };
-                warn!("problem reading module data - vectors are empty");
-                return md;
+            Err(e) => {
+                return Err(e);
             }
         }
     }
 
     /// Read the contents of a file as XML and return an instance of 'MergModuleDataSet'
-    fn read_fcu_file<P: AsRef<Path> + std::fmt::Display>(xml_file: P) -> Option<MergModuleDataSet> {
+    fn read_fcu_file<P: AsRef<Path> + std::fmt::Display>(
+        xml_file: P,
+    ) -> Result<MergModuleDataSet, &'static str> {
         // Open the file in read-only mode with buffer
-        let f = File::open(xml_file.as_ref());
-        match f {
-            Ok(file) => {
-                // Setup reader
-                let reader = BufReader::new(file);
-                // Deserialize XML data and place in module data structures
-                let module_data: Result<MergModuleDataSet, serde_xml_rs::Error> =
-                    from_reader(reader);
-                match module_data {
-                    Ok(md) => {
-                        return Some(md);
-                    }
-                    Err(_) => {
-                        error!(
-                            "error during serialization {}",
-                            xml_file.as_ref().to_str().unwrap()
-                        );
-                    }
-                }
+        if let Ok(file) = File::open(xml_file.as_ref()) {
+            // Setup reader
+            let reader = BufReader::new(file);
+            // Deserialize XML data and place in module data structures
+            let md: Result<MergModuleDataSet, serde_xml_rs::Error> = from_reader(reader);
+            match md {
+                Ok(module_data) => return Ok(module_data),
+                Err(_) => return Err("error during serialization"),
             }
-            Err(_) => {
-                error!("error opening file {}", xml_file.as_ref().to_str().unwrap())
-            }
+        } else {
+            Err("error opening file")
         }
-        None
     }
 }
 
@@ -173,7 +152,7 @@ mod test_fcu_data {
                 <Values />
                 <eventNode>2011</eventNode>
                 <eventValue>13</eventValue>
-                </userEvents>
+            </userEvents>
             <userNodes>
                 <moduleId>46</moduleId>
                 <moduleName>CANPiWi</moduleName>
@@ -223,8 +202,8 @@ mod test_fcu_data {
         let xml_file = "static/nonexistent_file.json";
         let md = MergModuleDataSet::read_fcu_file(xml_file);
         match md {
-            Some(_) => assert!(false, "'Some' returned)"),
-            None => assert!(true, "'None' returned"),
+            Ok(_) => assert!(false, "'Ok' returned)"),
+            Err(_) => assert!(true, "'Err' returned"),
         }
     }
 
@@ -238,9 +217,9 @@ mod test_fcu_data {
         let bad_result = MergModuleDataSet::read_fcu_file(&xml_file);
         teardown_file(&xml_file);
         match bad_result {
-            Some(_) => assert!(false, "'Some' returned"),
-            None => {
-                assert!(true, "'None' returned");
+            Ok(_) => assert!(false, "'Ok' returned"),
+            Err(_) => {
+                assert!(true, "'Err' returned");
             }
         }
     }
@@ -255,10 +234,64 @@ mod test_fcu_data {
         let good_result = MergModuleDataSet::read_fcu_file(&xml_file);
         teardown_file(&xml_file);
         match good_result {
-            Some(_) => assert!(true, "'Some' returned"),
-            None => {
-                assert!(false, "'None' returned");
+            Ok(_) => assert!(true, "'Ok' returned"),
+            Err(e) => {
+                assert!(false, "'Err' returned - {}", e);
             }
         }
+    }
+}
+
+/// CBus Event 'schema'
+
+/// State of CBus event
+#[derive(Clone, Serialize, Debug, PartialEq)]
+#[allow(dead_code)]
+pub enum State {
+    UNKN,
+    // acoff
+    ZERO,
+    // acon
+    ONE,
+}
+
+/// Definition of the state of a CBus event
+#[derive(Clone, Serialize, Debug)]
+pub struct CbusState {
+    /// Item name
+    pub name: String,
+    /// Event number - either long or short format
+    pub event: String,
+    /// Current state of the event
+    pub state: State,
+}
+
+#[derive(Clone, Serialize, Debug)]
+pub struct CBusInterface {
+    /// List of 'userEvents' from FCU configuration file
+    pub cbusstates: Vec<CbusState>,
+}
+
+impl CBusInterface {
+    pub fn new(fcu_config: MergModuleDataSet) -> CBusInterface {
+        // Create cbusstate
+        let mut cbusstates: Vec<CbusState> = Vec::new();
+        for event in fcu_config.userEvents {
+            if event.ownerNode == event.eventNode {
+                let name = event.eventName;
+                let event = "N".to_owned()
+                    + &event.eventNode.to_string()
+                    + "E"
+                    + &event.eventValue.to_string();
+                let state = State::UNKN;
+                let cbusstate = CbusState { name, event, state };
+                cbusstates.push(cbusstate);
+            }
+        }
+        CBusInterface { cbusstates }
+    }
+
+    pub fn pretty_print(&self) -> String {
+        serde_json::to_string_pretty(&self).unwrap()
     }
 }
